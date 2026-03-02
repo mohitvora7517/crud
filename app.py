@@ -1,21 +1,22 @@
 from __future__ import annotations
 
-import json
+import os
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import requests
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, g, redirect, render_template, request, session, url_for
 from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "fantasy.db"
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "dev-secret-key"
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
@@ -24,7 +25,10 @@ db = SQLAlchemy(app)
 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(120), unique=True, nullable=False)
+    name = db.Column(db.String(80), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
     teams = db.relationship("UserTeam", back_populates="user", cascade="all, delete-orphan")
 
 
@@ -32,12 +36,29 @@ class Match(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     external_match_id = db.Column(db.String(80), unique=True, nullable=False)
     name = db.Column(db.String(255), nullable=False)
-    source = db.Column(db.String(40), nullable=False, default="cricsheet")
+    team_a = db.Column(db.String(120), nullable=False)
+    team_b = db.Column(db.String(120), nullable=False)
+    starts_at = db.Column(db.DateTime, nullable=False)
+    status = db.Column(db.String(40), nullable=False, default="upcoming")
     winning_team = db.Column(db.String(120), nullable=True)
     is_abandoned = db.Column(db.Boolean, nullable=False, default=False)
-    parsed_at = db.Column(db.DateTime, default=datetime.utcnow)
-    teams = db.relationship("UserTeam", back_populates="match", cascade="all, delete-orphan")
+    source = db.Column(db.String(40), nullable=False, default="tarun7r")
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    players = db.relationship("MatchPlayer", back_populates="match", cascade="all, delete-orphan")
     player_stats = db.relationship("MatchPlayerStat", back_populates="match", cascade="all, delete-orphan")
+    teams = db.relationship("UserTeam", back_populates="match", cascade="all, delete-orphan")
+
+
+class MatchPlayer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    match_id = db.Column(db.Integer, db.ForeignKey("match.id"), nullable=False)
+    player_name = db.Column(db.String(120), nullable=False)
+    team_name = db.Column(db.String(120), nullable=False)
+    role = db.Column(db.String(60), nullable=False, default="unknown")
+    is_bowler = db.Column(db.Boolean, nullable=False, default=False)
+
+    match = db.relationship("Match", back_populates="players")
 
 
 class UserTeam(db.Model):
@@ -92,241 +113,340 @@ class PlayerPoints:
     wickets: int = 0
 
 
-def parse_cricsheet_match(payload: dict[str, Any]) -> dict[str, Any]:
-    info = payload.get("info", {})
-    match_name = info.get("event", {}).get("name") or f"{info.get('teams', ['Team A','Team B'])[0]} vs {info.get('teams', ['Team A','Team B'])[1]}"
+class CricketAPIClient:
+    """Adapter for tarun7r/Cricket-API compatible upstreams."""
 
-    outcome = info.get("outcome", {})
-    winner = outcome.get("winner")
-    abandoned = bool(outcome.get("result") == "no result")
+    def __init__(self) -> None:
+        self.base_url = os.environ.get("CRICKET_API_BASE_URL", "https://api.cricapi.com/v1")
+        self.api_key = os.environ.get("CRICKET_API_KEY", "")
 
-    players_by_team = info.get("players", {})
-    bowlers = set()
-    for team_players in players_by_team.values():
-        for p in team_players:
-            if any(k in p.lower() for k in ["bowler", "spinner"]):
-                bowlers.add(p)
-
-    points_map: dict[str, PlayerPoints] = defaultdict(PlayerPoints)
-
-    for innings in payload.get("innings", []):
-        innings_data = next(iter(innings.values()))
-        for over in innings_data.get("overs", []):
-            for delivery in over.get("deliveries", []):
-                batter = delivery.get("batter")
-                runs = delivery.get("runs", {}).get("batter", 0)
-                if batter:
-                    points_map[batter].runs += int(runs)
-
-                wickets = delivery.get("wickets", [])
-                for wicket in wickets:
-                    kind = wicket.get("kind", "")
-                    if kind and kind not in {"run out", "retired hurt", "obstructing the field"}:
-                        bowler = delivery.get("bowler")
-                        if bowler:
-                            points_map[bowler].wickets += 1
-                            bowlers.add(bowler)
-
-    player_stats = [
-        {"player_name": player, "runs": stats.runs, "wickets": stats.wickets}
-        for player, stats in points_map.items()
-    ]
-
-    return {
-        "name": match_name,
-        "winning_team": winner,
-        "is_abandoned": abandoned,
-        "bowlers": sorted(list(bowlers)),
-        "player_stats": player_stats,
-        "teams": info.get("teams", []),
-    }
-
-
-def load_json_from_source(source_url: str) -> dict[str, Any]:
-    if source_url.startswith("http"):
-        response = requests.get(source_url, timeout=30)
+    def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(params)
+        if self.api_key:
+            merged["apikey"] = self.api_key
+        url = f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
+        response = requests.get(url, params=merged, timeout=25)
         response.raise_for_status()
         return response.json()
 
-    with open(source_url, "r", encoding="utf-8") as f:
-        return json.load(f)
+    def match_info(self, external_match_id: str) -> dict[str, Any]:
+        payload = self._get("match_info", {"id": external_match_id})
+        data = payload.get("data", payload)
+
+        start_raw = data.get("dateTimeGMT") or data.get("startDate") or datetime.now(UTC).isoformat()
+        starts_at = parse_datetime(start_raw)
+
+        teams = data.get("teamInfo") or []
+        team_a = (teams[0].get("name") if len(teams) > 0 else data.get("teams", ["Team A", "Team B"])[0])
+        team_b = (teams[1].get("name") if len(teams) > 1 else data.get("teams", ["Team A", "Team B"])[1])
+
+        players: list[dict[str, Any]] = []
+        for team in teams:
+            team_name = team.get("name", "Unknown")
+            for p in team.get("players", []):
+                role = (p.get("role") or p.get("playingRole") or "unknown").lower()
+                players.append(
+                    {
+                        "name": p.get("name"),
+                        "team_name": team_name,
+                        "role": role,
+                        "is_bowler": "bowler" in role or "allrounder" in role,
+                    }
+                )
+
+        return {
+            "name": data.get("name", f"{team_a} vs {team_b}"),
+            "team_a": team_a,
+            "team_b": team_b,
+            "starts_at": starts_at,
+            "status": (data.get("status") or "upcoming").lower(),
+            "players": [p for p in players if p.get("name")],
+        }
+
+    def live_scorecard(self, external_match_id: str) -> dict[str, Any]:
+        payload = self._get("match_scorecard", {"id": external_match_id})
+        data = payload.get("data", payload)
+
+        outcome = data.get("matchWinner") or data.get("winner")
+        status_text = (data.get("status") or "").lower()
+        abandoned = "no result" in status_text or "abandon" in status_text or "rain" in status_text
+
+        points_map: dict[str, PlayerPoints] = defaultdict(PlayerPoints)
+        for innings in data.get("scorecard", []):
+            for batter in innings.get("batting", []):
+                name = batter.get("batsman", {}).get("name") or batter.get("name")
+                if name:
+                    points_map[name].runs += int(batter.get("r") or batter.get("runs") or 0)
+            for bowler in innings.get("bowling", []):
+                name = bowler.get("bowler", {}).get("name") or bowler.get("name")
+                if name:
+                    points_map[name].wickets += int(bowler.get("w") or bowler.get("wickets") or 0)
+
+        stats = [
+            {"player_name": player, "runs": row.runs, "wickets": row.wickets}
+            for player, row in points_map.items()
+        ]
+
+        return {
+            "winning_team": outcome,
+            "status": status_text or "live",
+            "is_abandoned": abandoned,
+            "stats": stats,
+        }
+
+
+def parse_datetime(value: str) -> datetime:
+    normalized = value.replace("Z", "+00:00")
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(UTC).replace(tzinfo=None)
+    return parsed
 
 
 def calculate_team_score(user_team: UserTeam, match: Match) -> int:
     if match.is_abandoned:
         return 0
-
-    stats_lookup = {
-        stat.player_name: (stat.runs, stat.wickets)
-        for stat in match.player_stats
-    }
-
+    lookup = {row.player_name: (row.runs, row.wickets) for row in match.player_stats}
     total = 0
     for pick in user_team.picks:
-        runs, wickets = stats_lookup.get(pick.player_name, (0, 0))
-        player_points = runs + (wickets * 25)
+        runs, wickets = lookup.get(pick.player_name, (0, 0))
+        pts = runs + wickets * 25
         if pick.is_mvp:
-            player_points *= 2
-        total += player_points
-
-    if user_team.predicted_winner == match.winning_team:
+            pts *= 2
+        total += pts
+    if user_team.predicted_winner and user_team.predicted_winner == match.winning_team:
         total += 25
-
     return total
+
+
+def recalculate_scores(match: Match) -> None:
+    for user_team in match.teams:
+        total = calculate_team_score(user_team, match)
+        if user_team.score:
+            user_team.score.points = total
+            user_team.score.calculated_at = datetime.utcnow()
+        else:
+            db.session.add(TeamScore(user_team_id=user_team.id, points=total))
+
+
+@app.before_request
+def load_current_user() -> None:
+    user_id = session.get("user_id")
+    g.current_user = User.query.get(user_id) if user_id else None
 
 
 @app.route("/")
 def index():
-    matches = Match.query.order_by(Match.parsed_at.desc()).all()
-    users = User.query.order_by(User.name.asc()).all()
-    return render_template("index.html", matches=matches, users=users)
+    matches = Match.query.order_by(Match.starts_at.asc()).all()
+    now = datetime.utcnow()
+    return render_template("index.html", matches=matches, now=now)
 
 
-@app.route("/users", methods=["POST"])
-def create_user():
-    name = request.form.get("name", "").strip()
-    if not name:
-        flash("Name is required", "error")
-        return redirect(url_for("index"))
-
-    existing = User.query.filter_by(name=name).first()
-    if existing:
-        flash("User already exists", "error")
-    else:
-        db.session.add(User(name=name))
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if request.method == "POST":
+        name = request.form.get("name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        if not name or not email or not password:
+            flash("All fields are required.", "error")
+            return redirect(url_for("signup"))
+        if User.query.filter_by(email=email).first():
+            flash("Email already registered.", "error")
+            return redirect(url_for("signup"))
+        user = User(name=name, email=email, password_hash=generate_password_hash(password))
+        db.session.add(user)
         db.session.commit()
-        flash("User created", "success")
+        session["user_id"] = user.id
+        flash("Account created.", "success")
+        return redirect(url_for("index"))
+    return render_template("auth.html", mode="signup")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        password = request.form.get("password", "")
+        user = User.query.filter_by(email=email).first()
+        if not user or not check_password_hash(user.password_hash, password):
+            flash("Invalid credentials.", "error")
+            return redirect(url_for("login"))
+        session["user_id"] = user.id
+        flash("Logged in.", "success")
+        return redirect(url_for("index"))
+    return render_template("auth.html", mode="login")
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.clear()
+    flash("Logged out.", "success")
     return redirect(url_for("index"))
 
 
 @app.route("/matches/import", methods=["POST"])
 def import_match():
     external_match_id = request.form.get("external_match_id", "").strip()
-    source_url = request.form.get("source_url", "").strip()
-
-    if not external_match_id or not source_url:
-        flash("Match ID and source URL are required", "error")
+    if not external_match_id:
+        flash("Match ID is required.", "error")
         return redirect(url_for("index"))
-
     if Match.query.filter_by(external_match_id=external_match_id).first():
-        flash("Match already imported", "error")
+        flash("Match already exists.", "error")
         return redirect(url_for("index"))
 
+    api = CricketAPIClient()
     try:
-        payload = load_json_from_source(source_url)
-        parsed = parse_cricsheet_match(payload)
+        data = api.match_info(external_match_id)
     except Exception as exc:
-        flash(f"Failed to import match: {exc}", "error")
+        flash(f"Unable to fetch match details: {exc}", "error")
         return redirect(url_for("index"))
 
     match = Match(
         external_match_id=external_match_id,
-        name=parsed["name"],
-        winning_team=parsed["winning_team"],
-        is_abandoned=parsed["is_abandoned"],
+        name=data["name"],
+        team_a=data["team_a"],
+        team_b=data["team_b"],
+        starts_at=data["starts_at"],
+        status=data["status"],
     )
     db.session.add(match)
     db.session.flush()
 
-    for stat in parsed["player_stats"]:
+    for p in data["players"]:
         db.session.add(
-            MatchPlayerStat(
+            MatchPlayer(
                 match_id=match.id,
-                player_name=stat["player_name"],
-                runs=stat["runs"],
-                wickets=stat["wickets"],
+                player_name=p["name"],
+                team_name=p["team_name"],
+                role=p["role"],
+                is_bowler=bool(p["is_bowler"]),
             )
         )
 
     db.session.commit()
-    flash("Match imported successfully", "success")
+    flash("Match imported with squads.", "success")
     return redirect(url_for("view_match", match_id=match.id))
 
 
-@app.route("/matches/<int:match_id>", methods=["GET", "POST"])
+@app.route("/matches/<int:match_id>")
 def view_match(match_id: int):
     match = Match.query.get_or_404(match_id)
-    users = User.query.order_by(User.name.asc()).all()
-    players = sorted({stat.player_name for stat in match.player_stats})
-    bowlers = sorted({stat.player_name for stat in match.player_stats if stat.wickets > 0})
-    teams = []
-    for ut in match.teams:
-        points = ut.score.points if ut.score else None
-        teams.append({"entry": ut, "points": points})
+    players = MatchPlayer.query.filter_by(match_id=match_id).order_by(MatchPlayer.team_name, MatchPlayer.player_name).all()
+    grouped: dict[str, list[MatchPlayer]] = defaultdict(list)
+    for p in players:
+        grouped[p.team_name].append(p)
+    user_team = UserTeam.query.filter_by(user_id=getattr(g.current_user, "id", None), match_id=match_id).first() if g.current_user else None
+    can_submit = datetime.utcnow() < match.starts_at and match.status.startswith("upcoming")
+    return render_template("match.html", match=match, grouped=grouped, user_team=user_team, can_submit=can_submit)
 
-    if request.method == "POST":
-        user_id = int(request.form["user_id"])
-        selected_players = request.form.getlist("players")
-        mvp = request.form.get("mvp", "")
-        predicted_winner = request.form.get("predicted_winner", "")
 
-        if len(selected_players) != 4:
-            flash("You must select exactly 4 players", "error")
-            return redirect(url_for("view_match", match_id=match_id))
+@app.route("/matches/<int:match_id>/submit", methods=["POST"])
+def submit_team(match_id: int):
+    if not g.current_user:
+        flash("Please log in to submit team.", "error")
+        return redirect(url_for("login"))
 
-        if mvp not in selected_players:
-            flash("MVP must be one of selected players", "error")
-            return redirect(url_for("view_match", match_id=match_id))
-
-        has_bowler = any(player in bowlers for player in selected_players)
-        if not has_bowler:
-            flash("At least 1 selected player must be a bowler", "error")
-            return redirect(url_for("view_match", match_id=match_id))
-
-        if UserTeam.query.filter_by(user_id=user_id, match_id=match_id).first():
-            flash("Team already submitted and locked", "error")
-            return redirect(url_for("view_match", match_id=match_id))
-
-        user_team = UserTeam(
-            user_id=user_id,
-            match_id=match_id,
-            predicted_winner=predicted_winner,
-            mvp_player_name=mvp,
-            is_locked=True,
-        )
-        db.session.add(user_team)
-        db.session.flush()
-
-        for player in selected_players:
-            db.session.add(
-                TeamPick(
-                    user_team_id=user_team.id,
-                    player_name=player,
-                    is_bowler=player in bowlers,
-                    is_mvp=(player == mvp),
-                )
-            )
-
-        score_value = calculate_team_score(user_team, match)
-        db.session.add(TeamScore(user_team_id=user_team.id, points=score_value))
-        db.session.commit()
-        flash("Team submitted and locked", "success")
+    match = Match.query.get_or_404(match_id)
+    if datetime.utcnow() >= match.starts_at or not match.status.startswith("upcoming"):
+        flash("Team submissions are closed for this match.", "error")
         return redirect(url_for("view_match", match_id=match_id))
 
-    return render_template(
-        "match.html",
-        match=match,
-        users=users,
-        players=players,
-        bowlers=bowlers,
-        teams=teams,
+    if UserTeam.query.filter_by(user_id=g.current_user.id, match_id=match_id).first():
+        flash("Your team is already locked.", "error")
+        return redirect(url_for("view_match", match_id=match_id))
+
+    selected_players = request.form.getlist("players")
+    mvp = request.form.get("mvp", "")
+    predicted_winner = request.form.get("predicted_winner", "").strip()
+
+    if len(selected_players) != 4:
+        flash("Select exactly 4 players.", "error")
+        return redirect(url_for("view_match", match_id=match_id))
+    if mvp not in selected_players:
+        flash("MVP must be one of your 4 players.", "error")
+        return redirect(url_for("view_match", match_id=match_id))
+
+    player_rows = MatchPlayer.query.filter(MatchPlayer.match_id == match_id, MatchPlayer.player_name.in_(selected_players)).all()
+    if len(player_rows) != 4:
+        flash("Some selected players are invalid.", "error")
+        return redirect(url_for("view_match", match_id=match_id))
+    if not any(row.is_bowler for row in player_rows):
+        flash("At least 1 bowler is required.", "error")
+        return redirect(url_for("view_match", match_id=match_id))
+
+    user_team = UserTeam(
+        user_id=g.current_user.id,
+        match_id=match_id,
+        predicted_winner=predicted_winner,
+        mvp_player_name=mvp,
+        is_locked=True,
     )
+    db.session.add(user_team)
+    db.session.flush()
+
+    bowlers = {row.player_name for row in player_rows if row.is_bowler}
+    for player in selected_players:
+        db.session.add(
+            TeamPick(
+                user_team_id=user_team.id,
+                player_name=player,
+                is_bowler=player in bowlers,
+                is_mvp=(player == mvp),
+            )
+        )
+
+    db.session.add(TeamScore(user_team_id=user_team.id, points=0))
+    db.session.commit()
+    flash("Team submitted and locked.", "success")
+    return redirect(url_for("view_match", match_id=match_id))
+
+
+@app.route("/matches/<int:match_id>/sync", methods=["POST"])
+def sync_match(match_id: int):
+    match = Match.query.get_or_404(match_id)
+    api = CricketAPIClient()
+    try:
+        data = api.live_scorecard(match.external_match_id)
+    except Exception as exc:
+        flash(f"Unable to sync live score: {exc}", "error")
+        return redirect(url_for("view_match", match_id=match_id))
+
+    MatchPlayerStat.query.filter_by(match_id=match.id).delete()
+    for row in data["stats"]:
+        db.session.add(
+            MatchPlayerStat(
+                match_id=match.id,
+                player_name=row["player_name"],
+                runs=row["runs"],
+                wickets=row["wickets"],
+            )
+        )
+
+    match.winning_team = data["winning_team"]
+    match.is_abandoned = bool(data["is_abandoned"])
+    match.status = data["status"]
+    match.updated_at = datetime.utcnow()
+
+    recalculate_scores(match)
+    db.session.commit()
+    flash("Live data synced and points recalculated.", "success")
+    return redirect(url_for("view_match", match_id=match_id))
 
 
 @app.route("/leaderboard")
 def leaderboard():
-    user_totals = []
-    for user in User.query.all():
-        match_rows = []
+    rows = []
+    for user in User.query.order_by(User.name.asc()).all():
         total = 0
+        by_match = []
         for team in user.teams:
-            points = team.score.points if team.score else 0
-            total += points
-            match_rows.append({"match": team.match.name, "points": points})
-        user_totals.append({"user": user, "total": total, "matches": match_rows})
-
-    user_totals.sort(key=lambda row: row["total"], reverse=True)
-    return render_template("leaderboard.html", user_totals=user_totals)
+            pts = team.score.points if team.score else 0
+            total += pts
+            by_match.append({"match": team.match.name, "status": team.match.status, "points": pts})
+        rows.append({"user": user, "total": total, "matches": by_match})
+    rows.sort(key=lambda item: item["total"], reverse=True)
+    return render_template("leaderboard.html", rows=rows)
 
 
 if __name__ == "__main__":

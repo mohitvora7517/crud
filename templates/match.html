@@ -1,59 +1,85 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>{{ match.name }}</h1>
-<p>Winner: {{ match.winning_team or 'TBD / No result' }}</p>
-<p>Abandoned: {{ 'Yes' if match.is_abandoned else 'No' }}</p>
-
-<div class="card">
-  <h2>Submit team (locked once posted)</h2>
-  <form method="post">
-    <label>User
-      <select name="user_id" required>
-      {% for user in users %}
-        <option value="{{ user.id }}">{{ user.name }}</option>
-      {% endfor %}
-      </select>
-    </label>
-
-    <h3>Pick exactly 4 players (minimum 1 bowler)</h3>
-    {% for player in players %}
-      <label>
-        <input type="checkbox" name="players" value="{{ player }}" />
-        {{ player }} {% if player in bowlers %}(Bowler){% endif %}
-      </label><br />
-    {% endfor %}
-
-    <h3>Select MVP (2x points)</h3>
-    <select name="mvp" required>
-      <option value="">-- select --</option>
-      {% for player in players %}
-        <option value="{{ player }}">{{ player }}</option>
-      {% endfor %}
-    </select>
-
-    <h3>Winning team prediction</h3>
-    <input name="predicted_winner" required />
-
-    <br /><br />
-    <button type="submit">Submit Locked Team</button>
+<div class="d-flex justify-content-between align-items-start mb-3">
+  <div>
+    <h3 class="mb-0">{{ match.team_a }} vs {{ match.team_b }}</h3>
+    <p class="text-muted mb-0">{{ match.name }}</p>
+    <small>Starts at {{ match.starts_at.strftime('%Y-%m-%d %H:%M UTC') }}</small>
+  </div>
+  <form method="post" action="{{ url_for('sync_match', match_id=match.id) }}">
+    <button class="btn btn-success">Sync Live Data</button>
   </form>
 </div>
 
-<div class="card">
-  <h2>Submitted Teams & Match Points</h2>
-  <table>
-    <tr><th>User</th><th>Players</th><th>MVP</th><th>Prediction</th><th>Points</th></tr>
-    {% for row in teams %}
-      <tr>
-        <td>{{ row.entry.user.name }}</td>
-        <td>{{ row.entry.picks | map(attribute='player_name') | join(', ') }}</td>
-        <td>{{ row.entry.mvp_player_name }}</td>
-        <td>{{ row.entry.predicted_winner }}</td>
-        <td>{{ row.points if row.points is not none else '-' }}</td>
-      </tr>
-    {% else %}
-      <tr><td colspan="5">No submissions yet</td></tr>
-    {% endfor %}
-  </table>
+<div class="alert alert-info">
+  <strong>Rules:</strong> Pick exactly 4 players, include at least 1 bowler, select 1 MVP (2x), predict winning team. Teams lock immediately and cannot be edited.
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-7">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5>Select your team</h5>
+        {% if not g.current_user %}
+          <p>Please <a href="{{ url_for('login') }}">login</a> to submit your team.</p>
+        {% elif user_team %}
+          <div class="alert alert-success">Your team is already locked for this match.</div>
+        {% elif not can_submit %}
+          <div class="alert alert-warning">Submissions closed (match started or live).</div>
+        {% else %}
+          <form method="post" action="{{ url_for('submit_team', match_id=match.id) }}">
+            {% for team, players in grouped.items() %}
+              <h6 class="mt-3">{{ team }}</h6>
+              {% for p in players %}
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" name="players" value="{{ p.player_name }}" id="p-{{ p.id }}">
+                  <label class="form-check-label" for="p-{{ p.id }}">
+                    {{ p.player_name }}
+                    <span class="badge bg-secondary">{{ p.role }}</span>
+                    {% if p.is_bowler %}<span class="badge bg-primary">Bowler</span>{% endif %}
+                  </label>
+                </div>
+              {% endfor %}
+            {% endfor %}
+            <label class="form-label mt-3">MVP</label>
+            <input class="form-control" name="mvp" placeholder="Exact player name from above" required />
+            <label class="form-label mt-2">Winning team prediction</label>
+            <select class="form-select" name="predicted_winner" required>
+              <option value="{{ match.team_a }}">{{ match.team_a }}</option>
+              <option value="{{ match.team_b }}">{{ match.team_b }}</option>
+            </select>
+            <button class="btn btn-primary mt-3" type="submit">Submit Locked Team</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <h5>Live status</h5>
+        <p class="mb-1">Status: <strong>{{ match.status }}</strong></p>
+        <p class="mb-1">Winner: <strong>{{ match.winning_team or 'TBD' }}</strong></p>
+        <p class="mb-0">Rain/Abandoned: <strong>{{ 'Yes' if match.is_abandoned else 'No' }}</strong></p>
+      </div>
+    </div>
+
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5>Current entries</h5>
+        <ul class="list-group list-group-flush">
+          {% for entry in match.teams %}
+            <li class="list-group-item px-0">
+              <strong>{{ entry.user.name }}</strong>: {{ entry.score.points if entry.score else 0 }} pts
+              <div class="small text-muted">{{ entry.picks | map(attribute='player_name') | join(', ') }}</div>
+            </li>
+          {% else %}
+            <li class="list-group-item px-0 text-muted">No teams submitted yet.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}

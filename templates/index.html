@@ -1,42 +1,46 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>Mini Fantasy Cricket</h1>
-
-<div class="card">
-  <h2>Create user profile</h2>
-  <form method="post" action="{{ url_for('create_user') }}">
-    <label>Name <input name="name" required /></label>
-    <button type="submit">Create</button>
-  </form>
-</div>
-
-<div class="card">
-  <h2>Import match JSON (Cricsheet/public source)</h2>
-  <form method="post" action="{{ url_for('import_match') }}">
-    <label>External match id <input name="external_match_id" required /></label><br />
-    <label>Source URL or local file <input name="source_url" size="80" required /></label><br />
-    <button type="submit">Import Match</button>
-  </form>
-</div>
-
-<div class="card">
-  <h2>Users</h2>
-  <ul>
-    {% for user in users %}<li>{{ user.name }}</li>{% else %}<li>No users yet</li>{% endfor %}
-  </ul>
-</div>
-
-<div class="card">
-  <h2>Matches</h2>
-  <ul>
-    {% for match in matches %}
-      <li>
-        <a href="{{ url_for('view_match', match_id=match.id) }}">{{ match.name }}</a>
-        {% if match.is_abandoned %}(Abandoned){% endif %}
-      </li>
-    {% else %}
-      <li>No matches imported</li>
-    {% endfor %}
-  </ul>
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Import Match (Live API)</h5>
+        <p class="text-muted small">Uses tarun7r/Cricket-API compatible endpoint to fetch squads and timings.</p>
+        <form method="post" action="{{ url_for('import_match') }}">
+          <label class="form-label">Match ID</label>
+          <input class="form-control" name="external_match_id" placeholder="e.g. 12345" required />
+          <button class="btn btn-primary mt-3 w-100" type="submit">Import Match</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Upcoming & Live Matches</h5>
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead>
+              <tr><th>Match</th><th>Start</th><th>Status</th><th></th></tr>
+            </thead>
+            <tbody>
+              {% for match in matches %}
+              <tr>
+                <td><strong>{{ match.team_a }}</strong> vs <strong>{{ match.team_b }}</strong><br><span class="text-muted small">{{ match.name }}</span></td>
+                <td>{{ match.starts_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+                <td>
+                  <span class="badge {{ 'bg-success' if 'live' in match.status else 'bg-secondary' }}">{{ match.status }}</span>
+                </td>
+                <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_match', match_id=match.id) }}">Open</a></td>
+              </tr>
+              {% else %}
+              <tr><td colspan="4" class="text-muted">No matches imported yet.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 {% endblock %}
