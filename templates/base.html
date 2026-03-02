@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Mini Fantasy Cricket</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 1000px; margin: 2rem auto; }
+      nav a { margin-right: 1rem; }
+      .flash-error { color: #a00; }
+      .flash-success { color: #060; }
+      table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+      th, td { border: 1px solid #ccc; padding: 0.5rem; }
+      .card { border: 1px solid #ddd; padding: 1rem; margin-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="{{ url_for('index') }}">Home</a>
+      <a href="{{ url_for('leaderboard') }}">Leaderboard</a>
+    </nav>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <p class="flash-{{ category }}">{{ message }}</p>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </body>
+</html>

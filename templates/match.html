@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>{{ match.name }}</h1>
+<p>Winner: {{ match.winning_team or 'TBD / No result' }}</p>
+<p>Abandoned: {{ 'Yes' if match.is_abandoned else 'No' }}</p>
+
+<div class="card">
+  <h2>Submit team (locked once posted)</h2>
+  <form method="post">
+    <label>User
+      <select name="user_id" required>
+      {% for user in users %}
+        <option value="{{ user.id }}">{{ user.name }}</option>
+      {% endfor %}
+      </select>
+    </label>
+
+    <h3>Pick exactly 4 players (minimum 1 bowler)</h3>
+    {% for player in players %}
+      <label>
+        <input type="checkbox" name="players" value="{{ player }}" />
+        {{ player }} {% if player in bowlers %}(Bowler){% endif %}
+      </label><br />
+    {% endfor %}
+
+    <h3>Select MVP (2x points)</h3>
+    <select name="mvp" required>
+      <option value="">-- select --</option>
+      {% for player in players %}
+        <option value="{{ player }}">{{ player }}</option>
+      {% endfor %}
+    </select>
+
+    <h3>Winning team prediction</h3>
+    <input name="predicted_winner" required />
+
+    <br /><br />
+    <button type="submit">Submit Locked Team</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Submitted Teams & Match Points</h2>
+  <table>
+    <tr><th>User</th><th>Players</th><th>MVP</th><th>Prediction</th><th>Points</th></tr>
+    {% for row in teams %}
+      <tr>
+        <td>{{ row.entry.user.name }}</td>
+        <td>{{ row.entry.picks | map(attribute='player_name') | join(', ') }}</td>
+        <td>{{ row.entry.mvp_player_name }}</td>
+        <td>{{ row.entry.predicted_winner }}</td>
+        <td>{{ row.points if row.points is not none else '-' }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5">No submissions yet</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

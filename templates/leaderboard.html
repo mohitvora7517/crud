@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Tournament Leaderboard</h1>
+<table>
+  <tr><th>Rank</th><th>User</th><th>Total Points</th><th>Match Breakdown</th></tr>
+  {% for row in user_totals %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ row.user.name }}</td>
+      <td>{{ row.total }}</td>
+      <td>
+        {% for m in row.matches %}
+          {{ m.match }}: {{ m.points }}{% if not loop.last %}, {% endif %}
+        {% else %}
+          No matches
+        {% endfor %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4">No users yet</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
