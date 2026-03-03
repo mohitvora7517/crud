@@ -1,11 +1,13 @@
 # Fantasy Cricket Live Web App
 
-A user-friendly Flask app for private fantasy contests with **locked 4-player teams**, **live score sync**, and tournament leaderboard.
+A user-friendly Flask app for private fantasy contests with locked 4-player teams, live score sync, and tournament leaderboard.
 
 ## What is implemented
 - Account system (signup/login/logout).
-- Match import from **tarun7r/Cricket-API compatible endpoints**.
-- Pulls squads for a match so users can pick only available players from both teams.
+- Tournament-first import flow (no manual match ID typing):
+  - Select tournament from dropdown
+  - Select match from that tournament
+  - Import selected match and squads
 - Team lock rules:
   - Exactly 4 players
   - Minimum 1 bowler (using API role tags)
@@ -13,6 +15,9 @@ A user-friendly Flask app for private fantasy contests with **locked 4-player te
   - 1 winner prediction
   - No edit after submit
   - Submit only before match starts
+- Match page supports both:
+  - Team creation from selected match squads
+  - Public visibility of all submitted user teams for that match
 - Live update button per match:
   - Fetches scorecard
   - Recalculates all submitted team points
@@ -26,14 +31,10 @@ A user-friendly Flask app for private fantasy contests with **locked 4-player te
 ## API setup
 This project uses a client adapter compatible with tarun7r/Cricket-API style data.
 
-Set environment variables:
-
 ```bash
 export CRICKET_API_BASE_URL="https://api.cricapi.com/v1"
 export CRICKET_API_KEY="your_key"
 ```
-
-You can point `CRICKET_API_BASE_URL` to any compatible provider.
 
 ## Run
 ```bash
