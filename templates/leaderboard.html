@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h4>Tournament Leaderboard</h4>
+    <div class="table-responsive">
+      <table class="table table-striped">
+        <thead>
+          <tr><th>#</th><th>User</th><th>Total</th><th>Per match</th></tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td>{{ row.user.name }}</td>
+              <td><strong>{{ row.total }}</strong></td>
+              <td>
+                {% for m in row.matches %}
+                  <span class="badge bg-light text-dark border">{{ m.match }} ({{ m.status }}): {{ m.points }}</span>
+                {% else %}
+                  <span class="text-muted">No matches yet</span>
+                {% endfor %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="text-muted">No users.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
