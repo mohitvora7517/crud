@@ -38,7 +38,6 @@ class Match(db.Model):
     name = db.Column(db.String(255), nullable=False)
     team_a = db.Column(db.String(120), nullable=False)
     team_b = db.Column(db.String(120), nullable=False)
-    tournament_name = db.Column(db.String(180), nullable=True)
     starts_at = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(40), nullable=False, default="upcoming")
     winning_team = db.Column(db.String(120), nullable=True)
@@ -130,41 +129,6 @@ class CricketAPIClient:
         response.raise_for_status()
         return response.json()
 
-    def list_tournaments(self) -> list[dict[str, str]]:
-        payload = self._get("series", {"offset": 0})
-        data = payload.get("data", [])
-        tournaments = []
-        for row in data:
-            tournament_id = str(row.get("id") or row.get("seriesId") or "")
-            name = row.get("name") or row.get("series") or "Unknown tournament"
-            if tournament_id:
-                tournaments.append({"id": tournament_id, "name": name})
-        return tournaments
-
-    def list_matches_for_tournament(self, tournament_id: str) -> list[dict[str, str]]:
-        payload = self._get("series_info", {"id": tournament_id})
-        data = payload.get("data", payload)
-        groups = data.get("matchList") or data.get("matches") or []
-        matches: list[dict[str, str]] = []
-
-        for group in groups:
-            items = group.get("matches") if isinstance(group, dict) else None
-            if items is None and isinstance(group, dict):
-                items = [group]
-            for row in items or []:
-                match_id = str(row.get("id") or row.get("matchId") or "")
-                if not match_id:
-                    continue
-                teams = row.get("teams") or []
-                if len(teams) >= 2:
-                    label = f"{teams[0]} vs {teams[1]}"
-                else:
-                    label = row.get("name") or row.get("matchName") or match_id
-                starts_at = row.get("dateTimeGMT") or row.get("date") or ""
-                matches.append({"id": match_id, "label": label, "starts_at": starts_at})
-
-        return matches
-
     def match_info(self, external_match_id: str) -> dict[str, Any]:
         payload = self._get("match_info", {"id": external_match_id})
         data = payload.get("data", payload)
@@ -173,9 +137,8 @@ class CricketAPIClient:
         starts_at = parse_datetime(start_raw)
 
         teams = data.get("teamInfo") or []
-        fallback_teams = data.get("teams", ["Team A", "Team B"])
-        team_a = teams[0].get("name") if len(teams) > 0 else fallback_teams[0]
-        team_b = teams[1].get("name") if len(teams) > 1 else fallback_teams[1]
+        team_a = (teams[0].get("name") if len(teams) > 0 else data.get("teams", ["Team A", "Team B"])[0])
+        team_b = (teams[1].get("name") if len(teams) > 1 else data.get("teams", ["Team A", "Team B"])[1])
 
         players: list[dict[str, Any]] = []
         for team in teams:
@@ -197,7 +160,6 @@ class CricketAPIClient:
             "team_b": team_b,
             "starts_at": starts_at,
             "status": (data.get("status") or "upcoming").lower(),
-            "tournament_name": data.get("series") or data.get("seriesName"),
             "players": [p for p in players if p.get("name")],
         }
 
@@ -220,7 +182,11 @@ class CricketAPIClient:
                 if name:
                     points_map[name].wickets += int(bowler.get("w") or bowler.get("wickets") or 0)
 
-        stats = [{"player_name": p, "runs": s.runs, "wickets": s.wickets} for p, s in points_map.items()]
+        stats = [
+            {"player_name": player, "runs": row.runs, "wickets": row.wickets}
+            for player, row in points_map.items()
+        ]
+
         return {
             "winning_team": outcome,
             "status": status_text or "live",
@@ -272,25 +238,8 @@ def load_current_user() -> None:
 @app.route("/")
 def index():
     matches = Match.query.order_by(Match.starts_at.asc()).all()
-    selected_tournament_id = request.args.get("tournament_id", "").strip()
-    api = CricketAPIClient()
-    tournaments: list[dict[str, str]] = []
-    tournament_matches: list[dict[str, str]] = []
-
-    try:
-        tournaments = api.list_tournaments()
-        if selected_tournament_id:
-            tournament_matches = api.list_matches_for_tournament(selected_tournament_id)
-    except Exception as exc:
-        flash(f"Live tournament list unavailable: {exc}", "error")
-
-    return render_template(
-        "index.html",
-        matches=matches,
-        tournaments=tournaments,
-        tournament_matches=tournament_matches,
-        selected_tournament_id=selected_tournament_id,
-    )
+    now = datetime.utcnow()
+    return render_template("index.html", matches=matches, now=now)
 
 
 @app.route("/signup", methods=["GET", "POST"])
@@ -340,7 +289,7 @@ def logout():
 def import_match():
     external_match_id = request.form.get("external_match_id", "").strip()
     if not external_match_id:
-        flash("Please select a match.", "error")
+        flash("Match ID is required.", "error")
         return redirect(url_for("index"))
     if Match.query.filter_by(external_match_id=external_match_id).first():
         flash("Match already exists.", "error")
@@ -360,7 +309,6 @@ def import_match():
         team_b=data["team_b"],
         starts_at=data["starts_at"],
         status=data["status"],
-        tournament_name=data.get("tournament_name"),
     )
     db.session.add(match)
     db.session.flush()
@@ -386,9 +334,8 @@ def view_match(match_id: int):
     match = Match.query.get_or_404(match_id)
     players = MatchPlayer.query.filter_by(match_id=match_id).order_by(MatchPlayer.team_name, MatchPlayer.player_name).all()
     grouped: dict[str, list[MatchPlayer]] = defaultdict(list)
-    for player in players:
-        grouped[player.team_name].append(player)
-
+    for p in players:
+        grouped[p.team_name].append(p)
     user_team = UserTeam.query.filter_by(user_id=getattr(g.current_user, "id", None), match_id=match_id).first() if g.current_user else None
     can_submit = datetime.utcnow() < match.starts_at and match.status.startswith("upcoming")
     return render_template("match.html", match=match, grouped=grouped, user_team=user_team, can_submit=can_submit)

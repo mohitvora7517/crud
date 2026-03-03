@@ -1,54 +1,36 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="row g-4">
-  <div class="col-lg-5">
+  <div class="col-lg-4">
     <div class="card shadow-sm">
       <div class="card-body">
-        <h5 class="card-title">Import from Tournament</h5>
-        <p class="text-muted small">Step 1: choose a tournament. Step 2: choose a match. No manual match ID required.</p>
-
-        <form method="get" action="{{ url_for('index') }}" class="mb-3">
-          <label class="form-label">Tournament</label>
-          <select class="form-select" name="tournament_id" onchange="this.form.submit()">
-            <option value="">-- Select tournament --</option>
-            {% for t in tournaments %}
-              <option value="{{ t.id }}" {% if selected_tournament_id == t.id %}selected{% endif %}>{{ t.name }}</option>
-            {% endfor %}
-          </select>
-        </form>
-
+        <h5 class="card-title">Import Match (Live API)</h5>
+        <p class="text-muted small">Uses tarun7r/Cricket-API compatible endpoint to fetch squads and timings.</p>
         <form method="post" action="{{ url_for('import_match') }}">
-          <label class="form-label">Match</label>
-          <select class="form-select" name="external_match_id" required>
-            <option value="">-- Select match --</option>
-            {% for m in tournament_matches %}
-              <option value="{{ m.id }}">{{ m.label }}{% if m.starts_at %} | {{ m.starts_at }}{% endif %}</option>
-            {% endfor %}
-          </select>
-          <button class="btn btn-primary mt-3 w-100" type="submit">Import Selected Match</button>
+          <label class="form-label">Match ID</label>
+          <input class="form-control" name="external_match_id" placeholder="e.g. 12345" required />
+          <button class="btn btn-primary mt-3 w-100" type="submit">Import Match</button>
         </form>
       </div>
     </div>
   </div>
-
-  <div class="col-lg-7">
+  <div class="col-lg-8">
     <div class="card shadow-sm">
       <div class="card-body">
-        <h5 class="card-title">Imported Matches</h5>
+        <h5 class="card-title">Upcoming & Live Matches</h5>
         <div class="table-responsive">
           <table class="table align-middle">
             <thead>
-              <tr><th>Tournament</th><th>Match</th><th>Status</th><th></th></tr>
+              <tr><th>Match</th><th>Start</th><th>Status</th><th></th></tr>
             </thead>
             <tbody>
               {% for match in matches %}
               <tr>
-                <td>{{ match.tournament_name or '-' }}</td>
+                <td><strong>{{ match.team_a }}</strong> vs <strong>{{ match.team_b }}</strong><br><span class="text-muted small">{{ match.name }}</span></td>
+                <td>{{ match.starts_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
                 <td>
-                  <strong>{{ match.team_a }}</strong> vs <strong>{{ match.team_b }}</strong><br>
-                  <span class="text-muted small">{{ match.starts_at.strftime('%Y-%m-%d %H:%M UTC') }}</span>
+                  <span class="badge {{ 'bg-success' if 'live' in match.status else 'bg-secondary' }}">{{ match.status }}</span>
                 </td>
-                <td><span class="badge {{ 'bg-success' if 'live' in match.status else 'bg-secondary' }}">{{ match.status }}</span></td>
                 <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('view_match', match_id=match.id) }}">Open</a></td>
               </tr>
               {% else %}
